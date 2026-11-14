@@ -1,0 +1,27 @@
+# Leadflow plus a self-hosted WAHA WhatsApp gateway.
+# If you already run a gateway elsewhere, delete the waha service and point WAHA_URL at it.
+services:
+  leadflow:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - leadflow-data:/data
+    restart: unless-stopped
+
+  waha:
+    image: devlikeapro/waha
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      WHATSAPP_HOOK_URL: http://leadflow:8000/webhooks/waha?token=${WEBHOOK_TOKEN}
+      WHATSAPP_HOOK_EVENTS: message
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - waha-sessions:/app/.sessions
+    restart: unless-stopped
+
+volumes:
+  leadflow-data:
+  waha-sessions:
