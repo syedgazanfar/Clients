@@ -3,6 +3,7 @@ import hmac
 import json
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -10,7 +11,7 @@ from leadflow.app import create_app
 from leadflow.config import Settings
 from leadflow.db import Database, iso
 from leadflow.phone import normalize_phone
-from leadflow.providers import CloudProvider, ConsoleProvider, Inbound, SendError, WahaProvider
+from leadflow.providers import AkgProvider, CloudProvider, ConsoleProvider, Inbound, SendError, WahaProvider
 from leadflow.service import LeadService, parse_choice, SERVICES
 
 OWNER = "447000000001"
@@ -30,6 +31,10 @@ def settings(tmp_path):
         followup_interval_seconds=0,
         cloud_app_secret="app-secret",
         cloud_verify_token="verify-me",
+        akg_url="https://wa.example.test",
+        akg_api_key="akg-key",
+        akg_session="main",
+        akg_webhook_secret="akg-secret",
     )
 
 
@@ -278,6 +283,56 @@ def test_cloud_parse_and_template_body(settings):
     assert cloud.build_body(LEAD, "hello", "reply", "Ada")["type"] == "text"
 
 
+def akg_event(**overrides):
+    data = {
+        "key": {"remoteJid": f"{LEAD}@s.whatsapp.net", "fromMe": False, "id": "3EB0A1"},
+        "from": f"{LEAD}@s.whatsapp.net",
+        "sender": "100429287395370@lid",
+        "type": "TEXT",
+        "content": " Hello ",
+        "isGroup": False,
+    }
+    data.update(overrides)
+    return {"event": "message.received", "sessionId": "main", "data": data}
+
+
+def test_akg_parse():
+    assert AkgProvider.parse(akg_event(), "main") == [
+        Inbound(phone=LEAD, text="Hello", provider_id="3EB0A1")
+    ]
+    assert AkgProvider.parse(akg_event(), "other-session") == []
+    assert AkgProvider.parse(akg_event(isGroup=True), "main") == []
+    assert AkgProvider.parse(akg_event(type="IMAGE"), "main") == []
+    assert AkgProvider.parse(akg_event(key={"fromMe": True, "id": "x"}), "main") == []
+    assert AkgProvider.parse({**akg_event(), "event": "message.sent"}, "main") == []
+    # Privacy id in "from": fall back to the phone JID in the key.
+    assert AkgProvider.parse(akg_event(**{"from": "1004@lid"}), "main")[0].phone == LEAD
+    lid_only = akg_event(**{"from": "1004@lid"}, key={"remoteJid": "1004@lid", "id": "x"})
+    assert AkgProvider.parse(lid_only, "main") == []
+
+
+def test_akg_send_request(settings):
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["key"] = request.headers["x-api-key"]
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"status": True, "data": {"key": {"id": "OUT1"}}})
+
+    akg = AkgProvider(settings, httpx.Client(transport=httpx.MockTransport(handler)))
+    assert akg.send(LEAD, "hi") == "OUT1"
+    assert seen["url"] == f"https://wa.example.test/api/messages/main/{LEAD}@s.whatsapp.net/send"
+    assert seen["key"] == "akg-key"
+    assert seen["body"] == {"message": {"text": "hi"}}
+
+    down = AkgProvider(
+        settings, httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
+    )
+    with pytest.raises(SendError):
+        down.send(LEAD, "hi")
+
+
 # HTTP -----------------------------------------------------------------------
 
 
@@ -369,3 +424,17 @@ def test_widget_served(client):
     response = client.get("/widget.js")
     assert response.status_code == 200
     assert "/api/leads" in response.text
+
+
+def test_akg_webhook_requires_valid_signature(client, provider):
+    raw = json.dumps(akg_event()).encode()
+    headers = {"Content-Type": "application/json"}
+    assert client.post("/webhooks/akg", content=raw, headers=headers).status_code == 401
+    bad = {**headers, "X-Webhook-Signature": "sha256=" + "0" * 64}
+    assert client.post("/webhooks/akg", content=raw, headers=bad).status_code == 401
+    signature = "sha256=" + hmac.new(b"akg-secret", raw, hashlib.sha256).hexdigest()
+    response = client.post(
+        "/webhooks/akg", content=raw, headers={**headers, "X-Webhook-Signature": signature}
+    )
+    assert response.json() == {"ok": True, "handled": 1}
+    assert "what is your name" in to_lead(provider)[-1]

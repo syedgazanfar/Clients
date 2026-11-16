@@ -3,6 +3,8 @@
 python -m leadflow.cli import contacts.csv   Import leads (columns: name, phone, email,
                                              company, service, message, consent)
 python -m leadflow.cli followups             Run one follow-up pass now
+python -m leadflow.cli akg-webhook URL       Register URL (https://HOST/webhooks/akg) with
+                                             the WA-AKG gateway for incoming messages
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import time
 
 from .config import Settings, load_dotenv
 from .db import Database
-from .providers import build_provider
+from .providers import AkgProvider, build_provider
 from .service import LeadService
 
 YES = {"1", "y", "yes", "true"}
@@ -52,10 +54,28 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("followups", help="run one follow-up pass")
     importer = commands.add_parser("import", help="import leads from a CSV file")
     importer.add_argument("path")
+    hook = commands.add_parser("akg-webhook", help="register our webhook with WA-AKG")
+    hook.add_argument("url")
     args = parser.parse_args(argv)
 
     load_dotenv()
     settings = Settings.from_env()
+    if args.command == "akg-webhook":
+        missing = [
+            name
+            for name, value in [
+                ("AKG_API_KEY", settings.akg_api_key),
+                ("AKG_SESSION", settings.akg_session),
+                ("AKG_WEBHOOK_SECRET", settings.akg_webhook_secret),
+            ]
+            if not value
+        ]
+        if missing:
+            print("Set these in .env first: " + ", ".join(missing))
+            return 1
+        AkgProvider(settings).register_webhook(args.url)
+        print(f"Registered {args.url} for incoming messages on session {settings.akg_session}.")
+        return 0
     service = LeadService(settings, Database(settings.db_path), build_provider(settings))
     if args.command == "import":
         imported, skipped = import_csv(service, args.path, settings.send_gap_seconds)

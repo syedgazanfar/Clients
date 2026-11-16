@@ -1,4 +1,4 @@
-"""WhatsApp providers: self-hosted WAHA gateway, official Cloud API, and a console dry-run."""
+"""WhatsApp providers: WA-AKG and WAHA self-hosted gateways, official Cloud API, dry-run."""
 
 from __future__ import annotations
 
@@ -35,6 +35,75 @@ class ConsoleProvider:
         self.sent.append({"to": to, "text": text, "kind": kind})
         log.info("[dry-run] to %s (%s): %s", to, kind, text)
         return None
+
+
+class AkgProvider:
+    """WA-AKG (github.com/mrifqidaffaaditya/WA-AKG) self-hosted WhatsApp gateway."""
+
+    name = "akg"
+
+    def __init__(self, settings: Settings, client: httpx.Client | None = None):
+        self.settings = settings
+        self.client = client or httpx.Client(timeout=30)
+
+    def send(self, to: str, text: str, kind: str = "reply", name: str = "") -> str | None:
+        url = (
+            f"{self.settings.akg_url}/api/messages/{self.settings.akg_session}"
+            f"/{to}@s.whatsapp.net/send"
+        )
+        try:
+            response = self.client.post(
+                url,
+                json={"message": {"text": text}},
+                headers={"X-API-Key": self.settings.akg_api_key},
+            )
+            response.raise_for_status()
+            data = response.json().get("data") or {}
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            raise SendError(f"WA-AKG send failed: {exc}") from exc
+        return (data.get("key") or {}).get("id")
+
+    def register_webhook(self, url: str) -> None:
+        """Tell the gateway to deliver incoming messages to our webhook URL."""
+        response = self.client.post(
+            f"{self.settings.akg_url}/api/webhooks/{self.settings.akg_session}",
+            json={
+                "name": "Leadflow",
+                "url": url,
+                "secret": self.settings.akg_webhook_secret,
+                "events": ["message.received"],
+            },
+            headers={"X-API-Key": self.settings.akg_api_key},
+        )
+        response.raise_for_status()
+
+    @staticmethod
+    def parse(payload: dict, session: str = "") -> list[Inbound]:
+        if payload.get("event") != "message.received":
+            return []
+        if session and payload.get("sessionId") != session:
+            return []
+        data = payload.get("data") or {}
+        key = data.get("key") or {}
+        text = data.get("content")
+        if key.get("fromMe") or data.get("isGroup") or data.get("type") != "TEXT":
+            return []
+        if not isinstance(text, str) or not text.strip():
+            return []
+        # The gateway may report a privacy id (@lid) in some fields; use the phone JID.
+        candidates = [data.get("from"), key.get("remoteJid"), data.get("remoteJidAlt")]
+        sender = next(
+            (str(c) for c in candidates if str(c or "").endswith("@s.whatsapp.net")), ""
+        )
+        if not sender:
+            return []
+        return [
+            Inbound(
+                phone=sender.split("@", 1)[0].split(":", 1)[0],
+                text=text.strip(),
+                provider_id=str(key["id"]) if key.get("id") else None,
+            )
+        ]
 
 
 class WahaProvider:
@@ -168,6 +237,8 @@ class CloudProvider:
 
 
 def build_provider(settings: Settings):
+    if settings.whatsapp_provider == "akg":
+        return AkgProvider(settings)
     if settings.whatsapp_provider == "waha":
         return WahaProvider(settings)
     if settings.whatsapp_provider == "cloud":

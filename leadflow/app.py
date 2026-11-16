@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings, load_dotenv
 from .db import Database
-from .providers import CloudProvider, WahaProvider, build_provider
+from .providers import AkgProvider, CloudProvider, WahaProvider, build_provider
 from .service import HOT_SCORE, LeadService
 
 log = logging.getLogger("leadflow.app")
@@ -155,21 +155,32 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
             return PlainTextResponse(params.get("hub.challenge", ""))
         raise HTTPException(403, "Verification failed")
 
-    @app.post("/webhooks/cloud")
-    async def cloud_webhook(request: Request) -> dict:
-        if not settings.cloud_app_secret:
-            raise HTTPException(503, "Webhook is disabled: set WA_CLOUD_APP_SECRET")
+    async def signed_json(request: Request, secret: str, header: str) -> dict:
+        """Read a JSON body after checking its 'sha256=<hex>' HMAC signature header."""
+        if not secret:
+            raise HTTPException(503, "Webhook is disabled: signing secret not configured")
         raw = await request.body()
-        expected = "sha256=" + hmac.new(
-            settings.cloud_app_secret.encode(), raw, hashlib.sha256
-        ).hexdigest()
-        if not _same(request.headers.get("x-hub-signature-256", ""), expected):
+        expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+        if not _same(request.headers.get(header, ""), expected):
             raise HTTPException(401, "Bad signature")
         try:
             payload = json.loads(raw)
         except ValueError:
             raise HTTPException(400, "Invalid JSON")
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "Invalid JSON")
+        return payload
+
+    @app.post("/webhooks/cloud")
+    async def cloud_webhook(request: Request) -> dict:
+        payload = await signed_json(request, settings.cloud_app_secret, "x-hub-signature-256")
         return {"ok": True, "handled": await run_in_threadpool(process, CloudProvider.parse(payload))}
+
+    @app.post("/webhooks/akg")
+    async def akg_webhook(request: Request) -> dict:
+        payload = await signed_json(request, settings.akg_webhook_secret, "x-webhook-signature")
+        messages = AkgProvider.parse(payload, settings.akg_session)
+        return {"ok": True, "handled": await run_in_threadpool(process, messages)}
 
     # Admin -----------------------------------------------------------------
 

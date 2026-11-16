@@ -55,7 +55,45 @@ Run the tests with `.venv/bin/python -m pytest`.
 
 Pick one provider in `.env`.
 
-### Option A: self-hosted gateway (WAHA)
+### Option A: your WA-AKG gateway (wa.invvite.heystartup.co.uk)
+
+This is the gateway you already host ([WA-AKG](https://github.com/mrifqidaffaaditya/WA-AKG)).
+
+1. In the gateway dashboard, make sure the WhatsApp number is connected, then note its
+   session ID and copy your API key from the settings page.
+2. In `.env` set:
+
+   ```
+   WHATSAPP_PROVIDER=akg
+   AKG_URL=https://wa.invvite.heystartup.co.uk
+   AKG_API_KEY=...            # from the gateway dashboard
+   AKG_SESSION=...            # the session ID
+   AKG_WEBHOOK_SECRET=...     # any long random string
+   ```
+
+   plus `OWNER_WHATSAPP` and `ADMIN_TOKEN`.
+3. Deploy Leadflow on a public HTTPS address (the gateway refuses plain-HTTP webhook URLs),
+   for example `https://leads.heystartup.co.uk`. With Docker:
+   `docker compose up -d --build leadflow`.
+4. Tell the gateway where to send incoming messages:
+
+   ```bash
+   .venv/bin/python -m leadflow.cli akg-webhook https://leads.heystartup.co.uk/webhooks/akg
+   ```
+
+   Or add it by hand in the gateway dashboard under Webhooks: that URL, the same secret,
+   event `message.received`.
+
+Two things to check on the gateway side:
+
+- Turn off any gateway auto-reply rules for this session, otherwise leads get two replies.
+- If `OWNER_WHATSAPP` is the same number the gateway is connected to, alerts would be sent
+  from the number to itself. Use a different number for alerts.
+
+Note: gateways of this kind drive a normal WhatsApp account through WhatsApp Web. That is
+not an officially supported route, so keep volume modest.
+
+### Option B: WAHA gateway
 
 [WAHA](https://github.com/devlikeapro/waha) is an open-source WhatsApp HTTP API you host
 yourself. `docker-compose.yml` runs it next to Leadflow.
@@ -70,11 +108,9 @@ If you already host a WAHA gateway, remove the `waha` service from the compose f
 `WAHA_URL` to it, and configure its message webhook to
 `https://YOUR-LEADFLOW-HOST/webhooks/waha?token=YOUR_WEBHOOK_TOKEN`.
 
-Note: gateways of this kind drive a normal WhatsApp account through WhatsApp Web. That is
-not an officially supported route, so keep volume modest and use a number you can afford to
-have restricted.
+The same caution about unofficial gateways applies.
 
-### Option B: official WhatsApp Cloud API
+### Option C: official WhatsApp Cloud API
 
 1. In `.env` set `WHATSAPP_PROVIDER=cloud`, `WA_CLOUD_TOKEN`, `WA_CLOUD_PHONE_ID`,
    `WA_CLOUD_VERIFY_TOKEN` and `WA_CLOUD_APP_SECRET`.
@@ -121,9 +157,9 @@ Questions, service list, score weights and keywords are plain Python at the top 
 ```
 leadflow/app.py        web app: form API, webhooks, dashboard
 leadflow/service.py    conversation, scoring, follow-ups
-leadflow/providers.py  WAHA, Cloud API and dry-run senders
+leadflow/providers.py  WA-AKG, WAHA, Cloud API and dry-run senders
 leadflow/db.py         SQLite storage
-leadflow/cli.py        CSV import, manual follow-up run
+leadflow/cli.py        CSV import, follow-up run, gateway webhook setup
 static/widget.js       website widget
 tests/                 test suite
 ```

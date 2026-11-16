@@ -39,13 +39,18 @@ class Settings:
     default_country_code: str = "44"
     owner_whatsapp: str = ""
 
-    # WhatsApp provider: console | waha | cloud
+    # WhatsApp provider: console | akg | waha | cloud
     whatsapp_provider: str = "console"
     webhook_token: str = ""
 
     waha_url: str = "http://localhost:3000"
     waha_api_key: str = ""
     waha_session: str = "default"
+
+    akg_url: str = "https://wa.invvite.heystartup.co.uk"
+    akg_api_key: str = ""
+    akg_session: str = ""
+    akg_webhook_secret: str = ""
 
     cloud_token: str = ""
     cloud_phone_id: str = ""
@@ -81,6 +86,10 @@ class Settings:
             waha_url=env("WAHA_URL", base.waha_url).rstrip("/"),
             waha_api_key=env("WAHA_API_KEY", ""),
             waha_session=env("WAHA_SESSION", base.waha_session),
+            akg_url=env("AKG_URL", base.akg_url).rstrip("/"),
+            akg_api_key=env("AKG_API_KEY", ""),
+            akg_session=env("AKG_SESSION", ""),
+            akg_webhook_secret=env("AKG_WEBHOOK_SECRET", ""),
             cloud_token=env("WA_CLOUD_TOKEN", ""),
             cloud_phone_id=env("WA_CLOUD_PHONE_ID", ""),
             cloud_verify_token=env("WA_CLOUD_VERIFY_TOKEN", ""),
